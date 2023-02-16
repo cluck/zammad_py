@@ -1,0 +1,3 @@
+#!/bin/bash
+echo Will do...
+sudo -u postgres /bin/bash -c "echo Will do..."
