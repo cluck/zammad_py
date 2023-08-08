@@ -42,7 +42,7 @@ class ZammadAPI:
         elif self._username and self._password:  # noqa: SIM106
             self.session.auth = (self._username, self._password)
         else:
-            raise ValueError("invalid auth")
+            raise ValueError("Invalid Authentication information in config")
 
         if self._on_behalf_of:
             self.session.headers["X-On-Behalf-Of"] = self._on_behalf_of
@@ -99,6 +99,11 @@ class ZammadAPI:
         return Organization(connection=self)
 
     @property
+    def role(self) -> "Role":
+        """Return a `Role` instance"""
+        return Role(connection=self)
+
+    @property
     def ticket(self) -> "Ticket":
         """Return a `Ticket` instance"""
         return Ticket(connection=self)
@@ -141,12 +146,18 @@ class ZammadAPI:
 
 class Pagination:
     def __init__(
-        self, items, resource: "Resource", filters=None, page: int = 1
+        self,
+        items,
+        resource: "Resource",
+        function_name: str,
+        params=None,
+        page: int = 1,
     ) -> None:
         self._items = items
         self._page = page
         self._resource = resource
-        self._filters = filters
+        self._params = params
+        self._function_name = function_name
 
     def __iter__(self):
         yield from self._items
@@ -162,11 +173,15 @@ class Pagination:
 
     def next_page(self) -> "Pagination":
         self._page += 1
-        return self._resource.all(page=self._page, filters=self._filters)
+        return getattr(self._resource, self._function_name)(
+            page=self._page, **self._params
+        )
 
     def prev_page(self) -> "Pagination":
         self._page -= 1
-        return self._resource.all(page=self._page, filters=self._filters)
+        return getattr(self._resource, self._function_name)(
+            page=self._page, **self._params
+        )
 
 
 class Resource(ABC):
@@ -200,7 +215,7 @@ class Resource(ABC):
         try:
             response.raise_for_status()
         except HTTPError:
-            raise
+            raise HTTPError(response.text)
 
         try:
             json_value = response.json()
@@ -219,15 +234,33 @@ class Resource(ABC):
         params.update({"page": page, "per_page": self._per_page, "expand": "true"})
         response = self._connection.session.get(self.url, params=params)
         data = self._raise_or_return_json(response)
-        return Pagination(items=data, resource=self, filters=filters, page=page)
+        return Pagination(
+            items=data,
+            resource=self,
+            function_name="all",
+            params={"filters": params},
+            page=page,
+        )
 
-    def search(self, params):
-        """Search using the given parameters
+    def search(self, search_string: str, page: int = 1, filters=None) -> Pagination:
+        """Returns the list of resources
 
-        :param params: Search parameters
+        :param search_string: option to filter for
+        :param page: Page number
+        :param filters: Filter arguments like page, per_page
         """
+        params = filters or {}
+        params.update({"query": search_string})
+        params.update({"page": page, "per_page": self._per_page, "expand": "true"})
         response = self._connection.session.get(self.url + "/search", params=params)
-        return self._raise_or_return_json(response)
+        data = self._raise_or_return_json(response)
+        return Pagination(
+            items=data,
+            resource=self,
+            function_name="search",
+            params={"search_string": search_string, "filters": params},
+            page=page,
+        )
 
     def find(self, id):
         """Return the resource associated with the id
@@ -265,6 +298,10 @@ class Resource(ABC):
 
 class Group(Resource):
     path_attribute = "groups"
+
+
+class Role(Resource):
+    path_attribute = "roles"
 
 
 class Organization(Resource):
@@ -311,11 +348,11 @@ class Link(Resource):
     ):
         """Create the link
 
-        :params link_type: Link type (for now*: 'normal')
+        :params link_type: Link type ('normal', 'parent', 'child')
         :params link_object_target: (for now*: 'Ticket')
-        :params link_object_target_value: The Ticket Number (Not the ID!)
+        :params link_object_target_value: Ticket ID
         :params link_object_source: (for now*: 'Ticket')
-        :params link_object_source_number: The Ticket Number (Not the ID!)
+        :params link_object_source_number: Ticket Number (Not the ID!)
 
         *Currently, only Tickets can be linked together.
         """
@@ -327,7 +364,7 @@ class Link(Resource):
             "link_object_source_number": link_object_source_number,
         }
 
-        response = self._connection.session.post(self.url + "add", json=params)
+        response = self._connection.session.post(self.url + "/add", json=params)
         return self._raise_or_return_json(response)
 
     def remove(
@@ -340,11 +377,11 @@ class Link(Resource):
     ):
         """Remove the Link
 
-        :params link_type: Link type (for now: 'normal')
+        :params link_type: Link type ('normal', 'parent', 'child')
         :params link_object_target: (for now: 'Ticket')
-        :params link_object_target_value: The Ticket Number (Not the ID!)
+        :params link_object_target_value: Ticket ID
         :params link_object_source: (for now: 'Ticket')
-        :params link_object_source_number: The Ticket Number (Not the ID!)
+        :params link_object_source_number: Ticket ID
         """
         params = {
             "link_type": link_type,
@@ -354,7 +391,7 @@ class Link(Resource):
             "link_object_source_number": link_object_source_number,
         }
 
-        response = self._connection.session.post(self.url + "remove", json=params)
+        response = self._connection.session.delete(self.url + "/remove", json=params)
         return self._raise_or_return_json(response)
 
     def get(self, id):
